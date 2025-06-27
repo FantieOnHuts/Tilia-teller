@@ -1,177 +1,113 @@
 // ==UserScript==
-// @name         Tilia Retour Item Teller (met Totaal)
+// @name         Tilia Teller
 // @namespace    http://tampermonkey.net/
-// @version      1.3
-// @description  Telt items die op een specifieke datum terugkomen binnen de HUIDIG GEOPENDE categorie op Tilia en houdt een cumulatief totaal bij.
-// @author       Jouw Naam (of laat leeg)
-// @match        https://partner.tilia.app/23/fietsverhuurtexel/dashboard/voorraad*
+// @version      5.0
+// @description  Blijft kijken ook op subpagina
+// @author       Troy Axel Groot
+// @match        https://partner.tilia.app/*
 // @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @run-at       document-idle
+// @run-at       document-start
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    // Haal de laatst gebruikte datum op voor de prompt default
-    let lastUsedGlobalDate = GM_getValue("tiliaLastReturnDateGlobal", "DD-MM-YYYY");
+    let menuCommandIds = [];
 
-    // Functie om de items te tellen
     function countReturnedItems() {
+        let lastUsedGlobalDate = GM_getValue("tiliaLastReturnDateGlobal", "DD-MM-YYYY");
         const targetDateStr = prompt("Voer de retourdatum in (DD-MM-YYYY):", lastUsedGlobalDate);
+        if (!targetDateStr || !/^\d{2}-\d{2}-\d{4}$/.test(targetDateStr)) return;
 
-        if (!targetDateStr) { // Gebruiker heeft op Annuleren geklikt
-            return;
-        }
-
-        if (!/^\d{2}-\d{2}-\d{4}$/.test(targetDateStr)) {
-            alert("Ongeldig datumformaat. Gebruik DD-MM-YYYY. Script gestopt.");
-            return;
-        }
-
-        // Sla de ingevoerde datum op als laatst gebruikte globale datum
-        lastUsedGlobalDate = targetDateStr;
         GM_setValue("tiliaLastReturnDateGlobal", targetDateStr);
-
-        // Key voor het opslaan van totalen voor DEZE specifieke datum
         const sessionTotalsKey = `tiliaSessionTotals_${targetDateStr.replace(/-/g, "")}`;
-        let sessionCounts = GM_getValue(sessionTotalsKey, {}); // Object: { "TYPE1": count, "TYPE2": count }
+        let sessionCounts = GM_getValue(sessionTotalsKey, {});
 
-        // --- SELECTEER DE DATA TABEL ---
-        let dataTable = null;
-        const allTables = document.querySelectorAll('table');
-        let headerNames = ["product code", "status", "verhuurperiode"];
-
-        allTables.forEach(table => {
-            const headerCells = table.querySelectorAll('th');
-            if (headerCells.length >= 3) {
-                let foundHeaders = 0;
-                headerCells.forEach(th => {
-                    const thText = th.textContent.trim().toLowerCase();
-                    if (headerNames.some(name => thText.includes(name))) {
-                        foundHeaders++;
-                    }
-                });
-                if (foundHeaders >= headerNames.length) {
-                    dataTable = table;
-                    return;
-                }
-            }
-        });
-
+        const dataTable = document.querySelector('table');
         if (!dataTable) {
-            alert("Kon de producttabel niet vinden. Zorg ervoor dat een categorie geopend is en de tabel met items zichtbaar is.");
+            alert("Kon geen tabel vinden op deze pagina.");
             return;
         }
 
         const rows = dataTable.querySelectorAll('tbody tr');
-        if (rows.length === 0) {
-            alert("Geen items (rijen) gevonden in de tabel van de geopende categorie.");
-            // Update wel de totalen display als er al totalen waren voor deze datum
-            displayResults({}, sessionCounts, targetDateStr, true);
-            return;
-        }
-
-        const currentCategoryCounts = {}; // Tellingen voor de HUIDIGE categorie
-        let itemsFoundInTableAndProcessed = 0;
-
+        const currentCategoryCounts = {};
         rows.forEach(row => {
             const cells = row.querySelectorAll('td');
-            if (cells.length >= 3) {
-                itemsFoundInTableAndProcessed++;
-                const itemIdText = cells[0].textContent.trim();
-                const statusText = cells[1].textContent.trim();
-                const dateRangeText = cells[2].textContent.trim();
-
-                if (statusText.toLowerCase() === 'verhuurd') {
-                    if (dateRangeText.includes(' - ')) {
-                        const dateParts = dateRangeText.split(' - ');
-                        if (dateParts.length === 2) {
-                            const returnDateStr = dateParts[1].trim();
-                            if (returnDateStr === targetDateStr) {
-                                let itemType = "ONBEKEND";
-                                const match = itemIdText.match(/^[A-Za-z]+/);
-                                if (match && match[0]) {
-                                    itemType = match[0].toUpperCase();
-                                } else if (itemIdText.length > 0) {
-                                    itemType = itemIdText.substring(0, Math.min(3, itemIdText.length)).toUpperCase();
-                                }
-                                currentCategoryCounts[itemType] = (currentCategoryCounts[itemType] || 0) + 1;
-                            }
-                        }
-                    }
-                }
+            if (cells.length < 3) return;
+            const statusText = (cells[1]?.textContent || '').trim().toLowerCase();
+            const dateRangeText = (cells[2]?.textContent || '').trim();
+            if (statusText === 'verhuurd' && dateRangeText.split(' - ')[1]?.trim() === targetDateStr) {
+                const itemIdText = (cells[0]?.textContent || '').trim();
+                const match = itemIdText.match(/^[A-Za-z]+/);
+                const itemType = (match && match[0]) ? match[0].toUpperCase() : "ONBEKEND";
+                currentCategoryCounts[itemType] = (currentCategoryCounts[itemType] || 0) + 1;
             }
         });
 
-        if (itemsFoundInTableAndProcessed === 0 && rows.length > 0) {
-            alert("Wel rijen gevonden, maar geen data cellen die voldeden aan de criteria. Controleer de tabelstructuur.");
-            // Update wel de totalen display als er al totalen waren voor deze datum
-            displayResults({}, sessionCounts, targetDateStr, true);
-            return;
-        }
-
-        // Update sessionCounts met currentCategoryCounts
         for (const type in currentCategoryCounts) {
             sessionCounts[type] = (sessionCounts[type] || 0) + currentCategoryCounts[type];
         }
-        GM_setValue(sessionTotalsKey, sessionCounts); // Sla de bijgewerkte totalen op
-
-        displayResults(currentCategoryCounts, sessionCounts, targetDateStr);
+        GM_setValue(sessionTotalsKey, sessionCounts);
+        displayResults(currentCategoryCounts, sessionCounts, targetDateStr, rows.length === 0);
     }
 
-    // Functie om resultaten te tonen
-    function displayResults(currentCategoryCounts, sessionCounts, targetDateStr, isEmptyCategory = false) {
-        let resultMessage = `--- Resultaten voor ${targetDateStr} ---\n\n`;
-        resultMessage += `Deze categorie:\n`;
-        if (isEmptyCategory && Object.keys(currentCategoryCounts).length === 0) {
-            resultMessage += `  Geen items gevonden of verwerkt in deze categorie.\n`;
-        } else if (Object.keys(currentCategoryCounts).length > 0) {
-            for (const type in currentCategoryCounts) {
-                resultMessage += `- Type ${type}: ${currentCategoryCounts[type]} item(s)\n`;
-            }
-        } else {
-            resultMessage += `  Geen 'Verhuurd' items gevonden die op deze datum terugkomen in deze categorie.\n`;
-        }
-
-        resultMessage += `\nCumulatief Totaal (voor ${targetDateStr} over alle gescande categorieën):\n`;
-        if (Object.keys(sessionCounts).length > 0) {
-            for (const type in sessionCounts) {
-                resultMessage += `- Type ${type}: ${sessionCounts[type]} item(s)\n`;
-            }
-        } else {
-            resultMessage += `  Nog geen items geteld voor deze datum in deze sessie, of totalen zijn gereset.\n`;
-        }
-        alert(resultMessage);
-    }
-
-    // Nieuwe functie om cumulatieve totalen voor een specifieke datum te resetten
     function resetSessionTotals() {
-        const dateToReset = prompt("Voor welke datum wilt u de cumulatieve totalen resetten? (DD-MM-YYYY)", lastUsedGlobalDate);
-        if (!dateToReset) return; // Gebruiker geannuleerd
-
-        if (!/^\d{2}-\d{2}-\d{4}$/.test(dateToReset)) {
-            alert("Ongeldig datumformaat. Gebruik DD-MM-YYYY. Reset geannuleerd.");
-            return;
-        }
-
-        const sessionTotalsKey = `tiliaSessionTotals_${dateToReset.replace(/-/g, "")}`;
-        GM_setValue(sessionTotalsKey, {}); // Reset naar een leeg object
-        // Update ook de laatst gebruikte globale datum als deze overeenkomt, zodat prompt schoon start
-        if (lastUsedGlobalDate === dateToReset) {
-            lastUsedGlobalDate = dateToReset; // Blijft gelijk, maar voor de duidelijkheid
-        }
-         // Of, als je wilt dat de prompt default naar "DD-MM-YYYY" gaat na een reset:
-        // GM_setValue("tiliaLastReturnDateGlobal", "DD-MM-YYYY");
-        // lastUsedGlobalDate = "DD-MM-YYYY";
-
-
-        alert(`Cumulatieve totalen voor datum ${dateToReset} zijn gereset.`);
+        let lastUsedGlobalDate = GM_getValue("tiliaLastReturnDateGlobal", "DD-MM-YYYY");
+        const dateToReset = prompt("Reset totalen voor datum (DD-MM-YYYY):", lastUsedGlobalDate);
+        if (!dateToReset || !/^\d{2}-\d{2}-\d{4}$/.test(dateToReset)) return;
+        GM_setValue(`tiliaSessionTotals_${dateToReset.replace(/-/g, "")}`, {});
+        GM_setValue("tiliaLastReturnDateGlobal", dateToReset);
+        alert(`Totalen voor ${dateToReset} zijn gereset.`);
     }
 
-    // Registreer menu commando's in Tampermonkey
-    GM_registerMenuCommand('Tel Tilia Retour Items (met Totaal)', countReturnedItems, 't');
-    GM_registerMenuCommand('Reset Cumulatief Totaal voor Datum', resetSessionTotals, 'r');
+    function displayResults(current, total, date, noRows) {
+        let msg = `--- Resultaten voor ${date} ---\n\nDeze categorie:\n`;
+        if (Object.keys(current).length > 0) {
+            for (const type in current) msg += `- Type ${type}: ${current[type]} item(s)\n`;
+        } else {
+             msg += noRows ? `  Geen items gevonden in tabel.\n` : `  Geen items met deze retourdatum gevonden.\n`;
+        }
+        msg += `\nCumulatief Totaal (voor ${date}):\n`;
+        if (Object.keys(total).length > 0) {
+            for (const type in total) msg += `- Type ${type}: ${total[type]} item(s)\n`;
+        } else {
+             msg += `  Nog geen items geteld.\n`;
+        }
+        alert(msg);
+    }
+
+
+    function setupMenusOnURLChange() {
+        menuCommandIds.forEach(id => GM_unregisterMenuCommand(id));
+        menuCommandIds = [];
+        if (window.location.pathname.includes("/dashboard")) {
+            console.log("Tilia Watcher: Dashboard gedetecteerd. Menu-items worden AANGEMAAKT.");
+            menuCommandIds.push(GM_registerMenuCommand('Tel Tilia Retour Items', countReturnedItems, 't'));
+            menuCommandIds.push(GM_registerMenuCommand('Reset Totaal voor Datum', resetSessionTotals, 'r'));
+        } else {
+            console.log("Tilia Watcher: NIET op dashboard. Menu-items worden NIET aangemaakt.");
+        }
+    }
+
+    (function(history) {
+        const pushState = history.pushState;
+        const replaceState = history.replaceState;
+
+        history.pushState = function(state) {
+            pushState.apply(history, arguments);
+            setupMenusOnURLChange(); 
+
+        history.replaceState = function(state) {
+            replaceState.apply(history, arguments);
+            setupMenusOnURLChange();         };
+
+        window.addEventListener('popstate', setupMenusOnURLChange);
+    })(window.history);
+
+
+    setupMenusOnURLChange();
 
 })();

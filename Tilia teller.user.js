@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tilia Teller
 // @namespace    http://tampermonkey.net/
-// @version      5.0
+// @version      5.1
 // @description  Blijft kijken ook op subpagina
 // @author       Troy Axel Groot
 // @match        https://partner.tilia.app/*
@@ -12,7 +12,7 @@
 // @run-at       document-start
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
     let menuCommandIds = [];
@@ -68,17 +68,16 @@
         if (Object.keys(current).length > 0) {
             for (const type in current) msg += `- Type ${type}: ${current[type]} item(s)\n`;
         } else {
-             msg += noRows ? `  Geen items gevonden in tabel.\n` : `  Geen items met deze retourdatum gevonden.\n`;
+            msg += noRows ? `  Geen items gevonden in tabel.\n` : `  Geen items met deze retourdatum gevonden.\n`;
         }
         msg += `\nCumulatief Totaal (voor ${date}):\n`;
         if (Object.keys(total).length > 0) {
             for (const type in total) msg += `- Type ${type}: ${total[type]} item(s)\n`;
         } else {
-             msg += `  Nog geen items geteld.\n`;
+            msg += `  Nog geen items geteld.\n`;
         }
         alert(msg);
     }
-
 
     function setupMenusOnURLChange() {
         menuCommandIds.forEach(id => GM_unregisterMenuCommand(id));
@@ -92,21 +91,22 @@
         }
     }
 
-    (function(history) {
-        const pushState = history.pushState;
-        const replaceState = history.replaceState;
+    const originalPushState = history.pushState;
+    const originalReplaceState = history.replaceState;
 
-        history.pushState = function(state) {
-            pushState.apply(history, arguments);
-            setupMenusOnURLChange(); 
+    history.pushState = function () {
+        originalPushState.apply(this, arguments);
+        setTimeout(setupMenusOnURLChange, 100);
+    };
 
-        history.replaceState = function(state) {
-            replaceState.apply(history, arguments);
-            setupMenusOnURLChange();         };
+    history.replaceState = function () {
+        originalReplaceState.apply(this, arguments);
+        setTimeout(setupMenusOnURLChange, 100);
+    };
 
-        window.addEventListener('popstate', setupMenusOnURLChange);
-    })(window.history);
-
+    window.addEventListener('popstate', () => {
+        setTimeout(setupMenusOnURLChange, 100);
+    });
 
     setupMenusOnURLChange();
 

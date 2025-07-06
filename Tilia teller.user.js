@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Tilia Teller
 // @namespace    http://tampermonkey.net/
-// @version      5.5
-// @description  Telt totalen van items en geeft dat weer in simpel venster.
-// @author       Troy Axel Groot
+// @version      6.1
+// @description  Telt fiets totalen omdat, tilia dit zelf niet kan.
+// @author       Troy Axel Groot (met aanpassing)
 // @match        https://partner.tilia.app/*
 // @grant        GM_registerMenuCommand
 // @grant        GM_unregisterMenuCommand
@@ -16,6 +16,8 @@
     'use strict';
 
     let menuCommandIds = [];
+
+
     function showCustomAlert(title, content) {
         const existingModal = document.getElementById('tilia-teller-modal-container');
         if (existingModal) existingModal.remove();
@@ -47,9 +49,26 @@
         document.getElementById('tilia-teller-overlay').onclick = closeModal;
     }
 
+
     function countReturnedItems() {
         let lastUsedGlobalDate = GM_getValue("tiliaLastReturnDateGlobal", "DD-MM-YYYY");
         const targetDateStr = prompt("Voer de retourdatum in (DD-MM-YYYY):", lastUsedGlobalDate);
+        performCount(targetDateStr);
+    }
+
+
+    function countReturnedItemsToday() {
+        const today = new Date();
+        const day = String(today.getDate()).padStart(2, '0');
+        const month = String(today.getMonth() + 1).padStart(2, '0');
+        const year = today.getFullYear();
+        const todayDateStr = `${day}-${month}-${year}`;
+
+        console.log(`Hotkey (F9) geactiveerd, start telling voor datum: ${todayDateStr}`);
+        performCount(todayDateStr);
+    }
+
+    function performCount(targetDateStr) {
         if (!targetDateStr || !/^\d{2}-\d{2}-\d{4}$/.test(targetDateStr)) return;
 
         GM_setValue("tiliaLastReturnDateGlobal", targetDateStr);
@@ -96,7 +115,6 @@
         displayOnlyTotals(sessionCounts, targetDateStr);
     }
 
-
     function resetSessionTotals() {
         let lastUsedGlobalDate = GM_getValue("tiliaLastReturnDateGlobal", "DD-MM-YYYY");
         const dateToReset = prompt("Reset totalen voor datum (DD-MM-YYYY):", lastUsedGlobalDate);
@@ -106,68 +124,56 @@
         showCustomAlert("Reset Voltooid", `Totalen voor ${dateToReset} zijn gereset.`);
     }
 
-
     function displayCountResults(current, total, date, noRows) {
         let content = "Deze categorie:\n--------------------\n";
         if (Object.keys(current).length > 0) {
             const grandTotalCurrent = Object.values(current).reduce((s, c) => s + c, 0);
-            Object.keys(current).sort().forEach(type => {
-                content += `- Type ${type}: ${current[type]} item(s)\n`;
-            });
+            Object.keys(current).sort().forEach(type => { content += `- Type ${type}: ${current[type]} item(s)\n`; });
             content += `\n  Totaal deze pagina: ${grandTotalCurrent} item(s)\n`;
         } else {
             content += noRows ? `  Geen items gevonden in tabel.\n` : `  Geen items met deze retourdatum gevonden.\n`;
         }
-
         content += `\nCumulatief Totaal (voor ${date}):\n--------------------------------------\n`;
         if (Object.keys(total).length > 0) {
             const grandTotalSession = Object.values(total).reduce((s, c) => s + c, 0);
-            Object.keys(total).sort().forEach(type => {
-                content += `- Type ${type}: ${total[type]} item(s)\n`;
-            });
+            Object.keys(total).sort().forEach(type => { content += `- Type ${type}: ${total[type]} item(s)\n`; });
             content += `\n  Cumulatief eindtotaal: ${grandTotalSession} item(s)\n`;
-        } else {
-            content += `  Nog geen items geteld.\n`;
-        }
+        } else { content += `  Nog geen items geteld.\n`; }
         showCustomAlert(`Resultaten voor ${date}`, content);
     }
-
 
     function displayOnlyTotals(total, date) {
         let content = `Cumulatief Totaal (voor ${date}):\n--------------------------------------\n`;
         if (Object.keys(total).length > 0) {
             const grandTotalSession = Object.values(total).reduce((s, c) => s + c, 0);
-            Object.keys(total).sort().forEach(type => {
-                content += `- Type ${type}: ${total[type]} item(s)\n`;
-            });
+            Object.keys(total).sort().forEach(type => { content += `- Type ${type}: ${total[type]} item(s)\n`; });
             content += `\n  Cumulatief eindtotaal: ${grandTotalSession} item(s)\n`;
-        } else {
-            content += `  Nog geen items geteld voor deze datum.\n`;
-        }
+        } else { content += `  Nog geen items geteld voor deze datum.\n`; }
         showCustomAlert(`Huidige Totaalstand voor ${date}`, content);
     }
-
 
     function setupMenusOnURLChange() {
         menuCommandIds.forEach(id => GM_unregisterMenuCommand(id));
         menuCommandIds = [];
         if (window.location.pathname.includes("/dashboard")) {
-            menuCommandIds.push(GM_registerMenuCommand('Tel Tilia Retour Items', countReturnedItems, 't'));
-            menuCommandIds.push(GM_registerMenuCommand('Bekijk Huidige Totalen', bekijkHuidigeTotalen, 'b')); // NIEUW
+            menuCommandIds.push(GM_registerMenuCommand('Tel Tilia Retour Items (kies datum)', countReturnedItems));
+            menuCommandIds.push(GM_registerMenuCommand('Bekijk Huidige Totalen', bekijkHuidigeTotalen, 'b'));
             menuCommandIds.push(GM_registerMenuCommand('Reset Totaal voor Datum', resetSessionTotals, 'r'));
         }
     }
 
+
+    document.addEventListener('keydown', function(event) {
+        if (event.key === 'F9') {
+            event.preventDefault();
+            countReturnedItemsToday();
+        }
+    });
+
     const originalPushState = history.pushState;
     const originalReplaceState = history.replaceState;
-    history.pushState = function () {
-        originalPushState.apply(this, arguments);
-        setTimeout(setupMenusOnURLChange, 100);
-    };
-    history.replaceState = function () {
-        originalReplaceState.apply(this, arguments);
-        setTimeout(setupMenusOnURLChange, 100);
-    };
+    history.pushState = function () { originalPushState.apply(this, arguments); setTimeout(setupMenusOnURLChange, 100); };
+    history.replaceState = function () { originalReplaceState.apply(this, arguments); setTimeout(setupMenusOnURLChange, 100); };
     window.addEventListener('popstate', () => setTimeout(setupMenusOnURLChange, 100));
     setupMenusOnURLChange();
 

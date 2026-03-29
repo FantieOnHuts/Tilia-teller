@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Tilia Teller
 // @namespace    http://tampermonkey.net/
-// @version      8.8
-// @description  Combinaat van de betrouwbare 6.1 logica met het moderne F9 menu en F8 hotkey.
+// @version      9.0
+// @description  Top ding.
 // @author       Troy Axel Groot (met aanpassing)
 // @match        https://partner.tilia.app/*
 // @grant        GM_setValue
@@ -24,68 +24,75 @@
     // --- Core Counting Logic (van 6.1) ---
     function countActiveTable() {
         const dateStr = getTodayDateStr();
-        const key = `tiliaSessionTotals_${dateStr.replace(/-/g, "")}`;
-        let sessionCounts = GM_getValue(key, {});
+        const dateKey = dateStr.replace(/-/g, "");
+        const keyTotals = `tiliaSessionTotals_${dateKey}`;
+        const keyIds = `tiliaCountedIds_${dateKey}`;
 
-        // Pak de tabel (zoals in v6.1)
+        let sessionCounts = GM_getValue(keyTotals, {});
+        let countedIds = GM_getValue(keyIds, []);
+
         const dataTable = document.querySelector('table');
         if (!dataTable) {
             console.warn("[Tilia Teller] Geen tabel gevonden op deze pagina.");
             alert("Kon geen tabel vinden op deze pagina.");
             return;
         }
-        console.log("[Tilia Teller] Tabel gedetecteerd, start telling...");
-
+        
         const rows = dataTable.querySelectorAll('tbody tr');
-        const currentCategoryCounts = {};
+        let newCountThisBatch = 0;
         let foundAny = false;
 
         rows.forEach(row => {
             const cells = row.querySelectorAll('td');
             if (cells.length < 3) return;
+            
             const statusText = (cells[1]?.textContent || '').trim().toLowerCase();
             const dateRangeText = (cells[2]?.textContent || '').trim();
             
             // Controleer op 'verhuurd' en de juiste retourdatum
             if (statusText === 'verhuurd' && dateRangeText.split(' - ')[1]?.trim() === dateStr) {
                 const itemIdText = (cells[0]?.textContent || '').trim();
-                const match = itemIdText.match(/^[A-Za-z]+/);
-                const itemType = (match && match[0]) ? match[0].toUpperCase() : "ONBEKEND";
                 
-                currentCategoryCounts[itemType] = (currentCategoryCounts[itemType] || 0) + 1;
-                foundAny = true;
+                // Protectie laag: Alleen tellen als ID nog niet eerder is geteld vandaag
+                if (!countedIds.includes(itemIdText)) {
+                    const match = itemIdText.match(/^[A-Za-z]+/);
+                    const itemType = (match && match[0]) ? match[0].toUpperCase() : "ONBEKEND";
+                    
+                    sessionCounts[itemType] = (sessionCounts[itemType] || 0) + 1;
+                    countedIds.push(itemIdText);
+                    newCountThisBatch++;
+                    foundAny = true;
+                }
             }
         });
 
-        // Voeg toe aan de cumulatieve totalen
-        for (const type in currentCategoryCounts) {
-            sessionCounts[type] = (sessionCounts[type] || 0) + currentCategoryCounts[type];
-        }
-
         if (foundAny) {
-            GM_setValue(key, sessionCounts);
+            GM_setValue(keyTotals, sessionCounts);
+            GM_setValue(keyIds, countedIds);
             updateWidgetView();
+            console.log(`[Tilia Teller] +${newCountThisBatch} nieuwe items toegevoegd.`);
+            
             // Visuele feedback op widget (Groen)
             const h = document.getElementById('t-header');
             if (h) { 
                 h.style.background = '#10b981'; 
                 const span = h.querySelector('span');
                 const oldText = span.innerText;
-                span.innerText = "Telling gelukt! ✅";
+                span.innerText = `+${newCountThisBatch} nieuw ✅`;
                 setTimeout(() => { 
                     h.style.background = ''; 
                     span.innerText = oldText;
-                }, 1000); 
+                }, 1200); 
             }
         } else {
-            console.log("[Tilia Teller] Geen items gevonden voor " + dateStr);
-            // Visuele feedback op widget (Oranje/Geel)
+            console.log("[Tilia Teller] Geen nieuwe items gevonden (mogelijk al geteld).");
+            // Visuele feedback op widget (Oranje)
             const h = document.getElementById('t-header');
             if (h) { 
                 h.style.background = '#f59e0b'; 
                 const span = h.querySelector('span');
                 const oldText = span.innerText;
-                span.innerText = "0 gevonden vandaag ⚠️";
+                span.innerText = "Geen nieuwe items ⚠️";
                 setTimeout(() => { 
                     h.style.background = ''; 
                     span.innerText = oldText;
@@ -111,12 +118,12 @@
 
         const widget = document.createElement('div');
         widget.id = 'tilia-v8-widget';
-        widget.style.display = 'flex'; // Zichtbaar bij start voor makkelijke debug
+        widget.style.display = 'none'; // Start gesloten zoals gevraagd
 
         widget.innerHTML = `
             <style>
                 #tilia-v8-widget {
-                    position: fixed; top: 60px; right: 20px; width: 220px;
+                    position: fixed; top: 90px; right: 20px; width: 220px;
                     background: #1e293b; color: white; border-radius: 12px;
                     z-index: 999999; border: 1px solid #334155;
                     font-family: 'Segoe UI', sans-serif; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
@@ -158,11 +165,11 @@
             if (id === 'btn-reset') {
                 if (btn.getAttribute('data-confirm') === 'true') {
                     // Tweede klik: Uitvoeren
-                    console.log("[Tilia Teller] Reset bevestigd. Dagtotalen worden gewist...");
-                    const key = `tiliaSessionTotals_${getTodayDateStr().replace(/-/g, "")}`;
-                    GM_setValue(key, {});
+                    console.log("[Tilia Teller] Reset bevestigd. Alles wordt gewist.");
+                    const dateKey = getTodayDateStr().replace(/-/g, "");
+                    GM_setValue(`tiliaSessionTotals_${dateKey}`, {});
+                    GM_setValue(`tiliaCountedIds_${dateKey}`, []);
                     updateWidgetView();
-                    
                     btn.innerText = "Gewist! 🗑️";
                     btn.style.background = "#ef4444";
                     btn.setAttribute('data-confirm', 'false');

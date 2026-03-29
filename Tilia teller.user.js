@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Tilia Teller
 // @namespace    http://tampermonkey.net/
-// @version      7.3
-// @description  Compacte zwevende teller, met een optie om resultaten uit de lijst te minnen als er iets verkeerd geteld is.
+// @version      7.4
+// @description  Compacte zwevende teller, met automatische tab-opening en tel-functies.
 // @author       Troy Axel Groot (met aanpassing)
 // @match        https://partner.tilia.app/*
 // @grant        GM_setValue
@@ -22,54 +22,103 @@
         return `${day}-${month}-${year}`;
     }
 
-    // --- Core Counting Logic ---
-    function countReturnedItemsToday() {
-        const todayDateStr = getTodayDateStr();
-        console.log(`Teller geactiveerd voor datum: ${todayDateStr}`);
-        performCount(todayDateStr);
+    function sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    function performCount(targetDateStr) {
-        if (!targetDateStr || !/^\d{2}-\d{2}-\d{4}$/.test(targetDateStr)) return;
-
-        GM_setValue("tiliaLastReturnDateGlobal", targetDateStr);
-        const sessionTotalsKey = `tiliaSessionTotals_${targetDateStr.replace(/-/g, "")}`;
-        let sessionCounts = GM_getValue(sessionTotalsKey, {});
-
-        const dataTable = document.querySelector('table');
-        if (!dataTable) {
-            alert("Kon geen tabel vinden op deze pagina.");
+    // --- Core Counting Logic ---
+    async function countAllRelevantTabs() {
+        const targetDateStr = getTodayDateStr();
+        const accordions = document.querySelectorAll('.MuiAccordion-root, [class*="MuiAccordion-root"]');
+        
+        if (accordions.length === 0) {
+            alert("Geen tabellen gevonden om te tellers. Staan er wel fietsen op deze pagina?");
             return;
         }
 
-        const rows = dataTable.querySelectorAll('tbody tr');
-        let addedCount = 0;
+        const sessionTotalsKey = `tiliaSessionTotals_${targetDateStr.replace(/-/g, "")}`;
+        let sessionCounts = GM_getValue(sessionTotalsKey, {});
+
+        // Voor lichte visuele feedback op de knop
+        const btn = document.getElementById('tilia-btn-auto-all');
+        if (btn) btn.innerText = "⏳ Bezig met tellen...";
+
+        for (const accordion of accordions) {
+            const summary = accordion.querySelector('.MuiAccordionSummary-root, [class*="MuiAccordionSummary-root"]');
+            if (!summary) continue;
+
+            const label = summary.textContent.trim().toLowerCase();
+            // Filter op relevante tabellen (bijv. geen laders of accessoires als dat gewenst is, 
+            // maar voor nu doen we alles wat de gebruiker openzet).
+            
+            // Check of hij al open is
+            const isExpanded = summary.getAttribute('aria-expanded') === 'true';
+            
+            if (!isExpanded) {
+                summary.click();
+                await sleep(800); // Wacht op animatie en data-load
+            }
+
+            const table = accordion.querySelector('table');
+            if (table) {
+                performCountInElement(table, targetDateStr, sessionCounts);
+            }
+        }
+
+        GM_setValue(sessionTotalsKey, sessionCounts);
+        updateWidgetTotals(targetDateStr);
+        
+        if (btn) btn.innerText = "🚀 Tel ALLE Tabellen";
+        
+        const widgetHeader = document.getElementById('tilia-widget-header');
+        if (widgetHeader) {
+            widgetHeader.style.background = '#10b981';
+            setTimeout(() => { widgetHeader.style.background = ''; }, 1000);
+        }
+    }
+
+    async function countSingleTab(accordion) {
+        const targetDateStr = getTodayDateStr();
+        const summary = accordion.querySelector('.MuiAccordionSummary-root, [class*="MuiAccordionSummary-root"]');
+        if (!summary) return;
+
+        const sessionTotalsKey = `tiliaSessionTotals_${targetDateStr.replace(/-/g, "")}`;
+        let sessionCounts = GM_getValue(sessionTotalsKey, {});
+
+        const isExpanded = summary.getAttribute('aria-expanded') === 'true';
+        if (!isExpanded) {
+            summary.click();
+            await sleep(600);
+        }
+
+        const table = accordion.querySelector('table');
+        if (table) {
+            performCountInElement(table, targetDateStr, sessionCounts);
+            GM_setValue(sessionTotalsKey, sessionCounts);
+            updateWidgetTotals(targetDateStr);
+        }
+    }
+
+    function performCountInElement(element, targetDateStr, countsObject) {
+        const rows = element.querySelectorAll('tbody tr');
         rows.forEach(row => {
             const cells = row.querySelectorAll('td');
             if (cells.length < 3) return;
             const statusText = (cells[1]?.textContent || '').trim().toLowerCase();
             const dateRangeText = (cells[2]?.textContent || '').trim();
+            
+            // Controleer op 'verhuurd' en de juiste datum
             if (statusText === 'verhuurd' && dateRangeText.split(' - ')[1]?.trim() === targetDateStr) {
                 const itemIdText = (cells[0]?.textContent || '').trim();
                 const match = itemIdText.match(/^[A-Za-z]+/);
                 const itemType = (match && match[0]) ? match[0].toUpperCase() : "ONBEKEND";
-                sessionCounts[itemType] = (sessionCounts[itemType] || 0) + 1;
-                addedCount++;
+                
+                // We voegen ze toe aan het object
+                countsObject[itemType] = (countsObject[itemType] || 0) + 1;
             }
         });
-
-        GM_setValue(sessionTotalsKey, sessionCounts);
-        updateWidgetTotals(targetDateStr);
-        
-        // Optional flash feedback
-        const widgetHeader = document.getElementById('tilia-widget-header');
-        if (widgetHeader) {
-            const originalBg = widgetHeader.style.background;
-            widgetHeader.style.background = '#10b981'; // green
-            setTimeout(() => { widgetHeader.style.background = originalBg; }, 1000);
-        }
     }
-    
+
     function manualCountRemove(type) {
         const targetDateStr = getTodayDateStr();
         const sessionTotalsKey = `tiliaSessionTotals_${targetDateStr.replace(/-/g, "")}`;
@@ -92,16 +141,36 @@
     }
 
 
-    // --- UI Floating Widget ---
-    function evaluateWidgetVisibility() {
-        const widget = document.getElementById('tilia-teller-widget');
-        const isVoorraadPage = window.location.pathname.endsWith("/voorraad");
-        
-        if (widget) {
-            widget.style.display = isVoorraadPage ? 'flex' : 'none';
-        } else if (isVoorraadPage) {
-            injectFloatingWidget();
-        }
+    // --- UI Injections ---
+    function injectInlineTabButtons() {
+        if (!window.location.pathname.endsWith("/voorraad")) return;
+
+        const accordions = document.querySelectorAll('.MuiAccordion-root, [class*="MuiAccordion-root"]');
+        accordions.forEach(accordion => {
+            const summary = accordion.querySelector('.MuiAccordionSummary-content, [class*="MuiAccordionSummary-content"]');
+            if (summary && !summary.querySelector('.tilia-inline-count-btn')) {
+                const btn = document.createElement('button');
+                btn.className = 'tilia-inline-count-btn';
+                btn.innerText = 'TEL DEZE';
+                btn.style.cssText = `
+                    margin-left: 20px;
+                    padding: 2px 8px;
+                    background: #3b82f6;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    font-size: 11px;
+                    font-weight: bold;
+                    cursor: pointer;
+                    z-index: 10;
+                `;
+                btn.onclick = (e) => {
+                    e.stopPropagation();
+                    countSingleTab(accordion);
+                };
+                summary.appendChild(btn);
+            }
+        });
     }
 
     function injectFloatingWidget() {
@@ -131,7 +200,6 @@
                     display: flex;
                     flex-direction: column;
                     overflow: hidden;
-                    transition: height 0.3s ease;
                 }
                 #tilia-teller-widget.minimized .tilia-content {
                     display: none;
@@ -144,12 +212,7 @@
                     display: flex;
                     justify-content: space-between;
                     align-items: center;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
                     cursor: pointer;
-                    user-select: none;
-                }
-                .tilia-header:hover {
-                    background: linear-gradient(135deg, #4b8df6, #3573eb);
                 }
                 .tilia-minimize-btn {
                     background: rgba(255,255,255,0.2);
@@ -162,18 +225,10 @@
                     align-items: center;
                     justify-content: center;
                     cursor: pointer;
-                    font-size: 14px;
-                    line-height: 1;
-                }
-                .tilia-minimize-btn:hover { background: rgba(255,255,255,0.4); }
-                .tilia-content {
-                    display: flex;
-                    flex-direction: column;
                 }
                 .tilia-total-list {
                     padding: 10px;
                     background: rgba(15, 23, 42, 0.8);
-                    min-height: 40px;
                     max-height: 250px;
                     overflow-y: auto;
                     font-size: 12px;
@@ -185,17 +240,6 @@
                     margin-bottom: 4px;
                     padding-bottom: 4px;
                     border-bottom: 1px solid rgba(255,255,255,0.05);
-                    font-weight: 500;
-                }
-                .tilia-total-item:last-child {
-                    border-bottom: none;
-                    margin-bottom: 0;
-                    padding-bottom: 0;
-                }
-                .tilia-total-left {
-                    display: flex;
-                    align-items: center;
-                    gap: 6px;
                 }
                 .tilia-btn-min-small {
                     background: #475569;
@@ -204,102 +248,74 @@
                     width: 18px;
                     height: 18px;
                     border-radius: 4px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    font-size: 14px;
-                    font-weight: bold;
                     cursor: pointer;
-                    line-height: 1;
+                    margin-right: 6px;
                 }
                 .tilia-btn-min-small:hover { background: #ef4444; }
                 .tilia-total-count {
                     background: #10b981;
                     padding: 2px 6px;
                     border-radius: 10px;
-                    font-size: 11px;
                     font-weight: bold;
                 }
                 .tilia-section-title {
                     margin: 10px 10px 6px;
                     font-size: 10px;
                     text-transform: uppercase;
-                    letter-spacing: 1px;
                     color: #94a3b8;
                     font-weight: bold;
-                }
-                .tilia-tabs-container {
-                    display: grid;
-                    grid-template-columns: 1fr;
-                    gap: 6px;
-                    padding: 0 10px 10px;
                 }
                 .tilia-btn {
                     background: #334155;
                     color: white;
                     border: 1px solid rgba(255,255,255,0.1);
-                    padding: 6px 10px;
+                    padding: 8px 10px;
                     border-radius: 4px;
                     cursor: pointer;
-                    transition: all 0.2s;
-                    text-align: left;
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    flex: 1;
                     font-size: 12px;
+                    margin: 0 10px 10px;
                 }
                 .tilia-btn:hover { background: #475569; }
-                .tilia-btn:active { transform: scale(0.98); }
                 .tilia-total-empty {
                     text-align: center;
                     color: #64748b;
                     font-style: italic;
-                    font-size: 11px;
                 }
             </style>
             
-            <div class="tilia-header" id="tilia-widget-header" title="Klik om open/dicht te klappen">
-                <div style="display:flex; align-items:center; gap:8px;">
-                    <span>⚡ Teller</span>
-                    <span id="tilia-header-date" style="font-size:10px; font-weight:normal; opacity:0.9;"></span>
-                </div>
-                <button class="tilia-minimize-btn" id="tilia-btn-minimize" title="Minimaliseren">${isMinimized ? '+' : '−'}</button>
+            <div class="tilia-header" id="tilia-widget-header">
+                <div>⚡ Teller - <span id="tilia-header-date"></span></div>
+                <button class="tilia-minimize-btn" id="tilia-btn-minimize">${isMinimized ? '+' : '−'}</button>
             </div>
             
-            <div class="tilia-content" id="tilia-widget-content">
+            <div class="tilia-content">
                 <div class="tilia-section-title">Huidige Totalen</div>
-                <div class="tilia-total-list" id="tilia-totals-render">
-                    <!-- Totals injected here via JS -->
-                </div>
+                <div class="tilia-total-list" id="tilia-totals-render"></div>
 
-                <div class="tilia-section-title">Acties</div>
-                <div class="tilia-tabs-container" style="padding-bottom:10px;">
-                     <button class="tilia-btn" id="tilia-btn-auto-page" style="background:#0f172a; justify-content:center; text-align:center;">
-                         🔍 Tel pagina (F9)
-                     </button>
-                     <button class="tilia-btn" id="tilia-btn-reset" style="background:rgba(220, 38, 38, 0.2); color:#fca5a5; border-color:rgba(220,38,38,0.4); justify-content:center; text-align:center;">
-                         Reset Vandaag
-                     </button>
+                <div class="tilia-section-title">Automatisering</div>
+                <button class="tilia-btn" id="tilia-btn-auto-all" style="background:#1e3a8a; font-weight:bold;">
+                    🚀 Tel ALLE Tabellen
+                </button>
+                <div style="display:flex; gap:5px; padding:0 10px;">
+                    <button class="tilia-btn" id="tilia-btn-reset" style="flex:1; margin:0; background:rgba(220, 38, 38, 0.2); color:#fca5a5;">
+                        Reset
+                    </button>
                 </div>
+                <div style="height:10px;"></div>
             </div>
         `;
 
         document.body.appendChild(widget);
         
-        // Minimize toggle
-        const toggleMinimize = () => {
+        document.getElementById('tilia-widget-header').onclick = () => {
             const isMin = widget.classList.toggle('minimized');
             document.getElementById('tilia-btn-minimize').innerText = isMin ? '+' : '−';
             GM_setValue("tiliaWidgetMinimized", isMin);
         };
-        document.getElementById('tilia-widget-header').addEventListener('click', toggleMinimize);
 
-        // Binds
-        document.getElementById('tilia-btn-auto-page').onclick = (e) => { e.stopPropagation(); countReturnedItemsToday(); };
-        document.getElementById('tilia-btn-reset').onclick = (e) => { e.stopPropagation(); resetSessionTotals(); };
+        document.getElementById('tilia-btn-auto-all').onclick = countAllRelevantTabs;
+        document.getElementById('tilia-btn-reset').onclick = resetSessionTotals;
         
-        // Initial load
         updateWidgetTotals(getTodayDateStr());
     }
 
@@ -309,14 +325,12 @@
         const headerDate = document.getElementById('tilia-header-date');
         if (!renderEl) return;
         
-        if (headerDate) headerDate.innerText = dateStr;
-
+        headerDate.innerText = dateStr;
         const sessionTotalsKey = `tiliaSessionTotals_${dateStr.replace(/-/g, "")}`;
         const sessionCounts = GM_getValue(sessionTotalsKey, {});
         
         renderEl.innerHTML = '';
         const keys = Object.keys(sessionCounts).sort();
-        
         let totalSum = 0;
         
         if (keys.length === 0) {
@@ -327,60 +341,45 @@
         keys.forEach(type => {
             const count = sessionCounts[type];
             totalSum += count;
-            
             const itemDiv = document.createElement('div');
             itemDiv.className = 'tilia-total-item';
-            
-            const leftDiv = document.createElement('div');
-            leftDiv.className = 'tilia-total-left';
-
-            const minusBtn = document.createElement('button');
-            minusBtn.className = 'tilia-btn-min-small';
-            minusBtn.innerText = '−';
-            minusBtn.title = 'Min 1 verwijderen';
-            minusBtn.onclick = (e) => { e.stopPropagation(); manualCountRemove(type); };
-
-            const nameSpan = document.createElement('span');
-            nameSpan.innerText = type;
-
-            leftDiv.appendChild(minusBtn);
-            leftDiv.appendChild(nameSpan);
-            
-            const countSpan = document.createElement('span');
-            countSpan.className = 'tilia-total-count';
-            countSpan.innerText = count;
-            
-            itemDiv.appendChild(leftDiv);
-            itemDiv.appendChild(countSpan);
+            itemDiv.innerHTML = `
+                <div style="display:flex; align-items:center;">
+                    <button class="tilia-btn-min-small" onclick="window.tiliaManualRemove('${type}')">−</button>
+                    <span>${type}</span>
+                </div>
+                <span class="tilia-total-count">${count}</span>
+            `;
             renderEl.appendChild(itemDiv);
         });
         
-        // Add Grand Total
         const grandTotalDiv = document.createElement('div');
         grandTotalDiv.className = 'tilia-total-item';
-        grandTotalDiv.style.marginTop = '4px';
         grandTotalDiv.style.borderTop = '1px solid rgba(255,255,255,0.2)';
         grandTotalDiv.style.paddingTop = '6px';
         grandTotalDiv.style.color = '#60a5fa';
-        grandTotalDiv.innerHTML = `<span><b>Eindtotaal</b></span><span class="tilia-total-count" style="background:#3b82f6; color:white;">${totalSum}</span>`;
+        grandTotalDiv.innerHTML = `<span><b>Eindtotaal</b></span><span class="tilia-total-count" style="background:#3b82f6;">${totalSum}</span>`;
         renderEl.appendChild(grandTotalDiv);
     }
 
+    // Expose for inline buttons
+    window.tiliaManualRemove = manualCountRemove;
+
     // --- Init ---
-    document.addEventListener('keydown', function(event) {
-        if (event.key === 'F9') {
-            event.preventDefault();
-            countReturnedItemsToday();
+    function evaluateVisibility() {
+        if (window.location.pathname.endsWith("/voorraad")) {
+            injectFloatingWidget();
+            // Periodiek injecteren voor het geval de tabel opnieuw wordt geladen door filters/tabs
+            setInterval(injectInlineTabButtons, 2000);
+        } else {
+            const widget = document.getElementById('tilia-teller-widget');
+            if (widget) widget.style.display = 'none';
         }
-    });
+    }
 
     const originalPushState = history.pushState;
-    const originalReplaceState = history.replaceState;
-    history.pushState = function () { originalPushState.apply(this, arguments); setTimeout(evaluateWidgetVisibility, 100); };
-    history.replaceState = function () { originalReplaceState.apply(this, arguments); setTimeout(evaluateWidgetVisibility, 100); };
-    window.addEventListener('popstate', () => setTimeout(evaluateWidgetVisibility, 100));
+    history.pushState = function () { originalPushState.apply(this, arguments); setTimeout(evaluateVisibility, 500); };
+    window.addEventListener('popstate', () => setTimeout(evaluateVisibility, 500));
     
-    // Run on first load
-    evaluateWidgetVisibility();
-
+    evaluateVisibility();
 })();

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Tilia Teller
 // @namespace    http://tampermonkey.net/
-// @version      7.7
-// @description  Verbeterde versie: F9 toggle menu, overal actief, knoppen gerepareerd.
+// @version      8.8
+// @description  Combinaat van de betrouwbare 6.1 logica met het moderne F9 menu en F8 hotkey.
 // @author       Troy Axel Groot (met aanpassing)
 // @match        https://partner.tilia.app/*
 // @grant        GM_setValue
@@ -12,261 +12,257 @@
 
 (function () {
     'use strict';
-
-    let isBusyCounting = false;
+    if (window.top !== window) return;
+    console.log("[Tilia Teller] Script v8.7 geladen.");
 
     // --- Utility Functions ---
     function getTodayDateStr() {
-        const today = new Date();
-        const day = String(today.getDate()).padStart(2, '0');
-        const month = String(today.getMonth() + 1).padStart(2, '0');
-        const year = today.getFullYear();
-        return `${day}-${month}-${year}`;
+        const d = new Date();
+        return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
     }
 
-    function sleep(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
-    }
-
-    // --- Core Logic ---
-    function findAccordions() {
-        // Robuuste zoektocht naar alles wat de summary van een uitklapbalk kan zijn
-        return Array.from(document.querySelectorAll('[class*="MuiAccordionSummary-root"], div[role="button"]'))
-            .filter(s => s.textContent.includes('/') || s.querySelector('svg'));
-    }
-
-    async function waitForTableData(root) {
-        for (let i = 0; i < 30; i++) {
-            const table = root.querySelector('table');
-            if (table) {
-                const rows = table.querySelectorAll('tbody tr');
-                if (rows.length > 0) {
-                    const txt = rows[0].textContent.toLowerCase();
-                    if (!txt.includes('laden') && !txt.includes('bezig')) return true;
-                }
-            }
-            await sleep(200);
-        }
-        return false;
-    }
-
-    async function countAllRelevant() {
-        if (isBusyCounting) return;
-        isBusyCounting = true;
-        const summaries = findAccordions();
+    // --- Core Counting Logic (van 6.1) ---
+    function countActiveTable() {
         const dateStr = getTodayDateStr();
         const key = `tiliaSessionTotals_${dateStr.replace(/-/g, "")}`;
-        let counts = GM_getValue(key, {});
-        const btn = document.getElementById('t-auto');
+        let sessionCounts = GM_getValue(key, {});
 
-        try {
-            for (let i = 0; i < summaries.length; i++) {
-                const s = summaries[i];
-                if (btn) btn.innerText = `⏳ Tellen... (${i+1}/${summaries.length})`;
+        // Pak de tabel (zoals in v6.1)
+        const dataTable = document.querySelector('table');
+        if (!dataTable) {
+            console.warn("[Tilia Teller] Geen tabel gevonden op deze pagina.");
+            alert("Kon geen tabel vinden op deze pagina.");
+            return;
+        }
+        console.log("[Tilia Teller] Tabel gedetecteerd, start telling...");
+
+        const rows = dataTable.querySelectorAll('tbody tr');
+        const currentCategoryCounts = {};
+        let foundAny = false;
+
+        rows.forEach(row => {
+            const cells = row.querySelectorAll('td');
+            if (cells.length < 3) return;
+            const statusText = (cells[1]?.textContent || '').trim().toLowerCase();
+            const dateRangeText = (cells[2]?.textContent || '').trim();
+            
+            // Controleer op 'verhuurd' en de juiste retourdatum
+            if (statusText === 'verhuurd' && dateRangeText.split(' - ')[1]?.trim() === dateStr) {
+                const itemIdText = (cells[0]?.textContent || '').trim();
+                const match = itemIdText.match(/^[A-Za-z]+/);
+                const itemType = (match && match[0]) ? match[0].toUpperCase() : "ONBEKEND";
                 
-                s.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                await sleep(400);
-
-                const isExpanded = s.getAttribute('aria-expanded') === 'true' || s.classList.contains('Mui-expanded');
-                if (!isExpanded) {
-                    s.click();
-                    await waitForTableData(s.closest('[class*="MuiAccordion-root"]') || s.parentElement.parentElement);
-                }
-
-                const table = (s.closest('[class*="MuiAccordion-root"]') || s.parentElement.parentElement).querySelector('table');
-                if (table) {
-                    table.querySelectorAll('tbody tr').forEach(row => {
-                        const cells = row.querySelectorAll('td');
-                        if (cells.length < 3) return;
-                        if (cells[1].textContent.toLowerCase().includes('verhuurd') && 
-                            cells[2].textContent.split(' - ')[1]?.trim() === dateStr) {
-                            const prefix = (cells[0].textContent.trim().match(/^[A-Za-z]+/) || ["ONBEKEND"])[0].toUpperCase();
-                            counts[prefix] = (counts[prefix] || 0) + 1;
-                        }
-                    });
-                }
-                GM_setValue(key, counts);
-                updateList();
-                await sleep(500);
+                currentCategoryCounts[itemType] = (currentCategoryCounts[itemType] || 0) + 1;
+                foundAny = true;
             }
-        } finally {
-            isBusyCounting = false;
-            if (btn) btn.innerText = "🚀 Tel ALLE Tabellen";
+        });
+
+        // Voeg toe aan de cumulatieve totalen
+        for (const type in currentCategoryCounts) {
+            sessionCounts[type] = (sessionCounts[type] || 0) + currentCategoryCounts[type];
+        }
+
+        if (foundAny) {
+            GM_setValue(key, sessionCounts);
+            updateWidgetView();
+            // Visuele feedback op widget (Groen)
+            const h = document.getElementById('t-header');
+            if (h) { 
+                h.style.background = '#10b981'; 
+                const span = h.querySelector('span');
+                const oldText = span.innerText;
+                span.innerText = "Telling gelukt! ✅";
+                setTimeout(() => { 
+                    h.style.background = ''; 
+                    span.innerText = oldText;
+                }, 1000); 
+            }
+        } else {
+            console.log("[Tilia Teller] Geen items gevonden voor " + dateStr);
+            // Visuele feedback op widget (Oranje/Geel)
+            const h = document.getElementById('t-header');
+            if (h) { 
+                h.style.background = '#f59e0b'; 
+                const span = h.querySelector('span');
+                const oldText = span.innerText;
+                span.innerText = "0 gevonden vandaag ⚠️";
+                setTimeout(() => { 
+                    h.style.background = ''; 
+                    span.innerText = oldText;
+                }, 2000); 
+            }
         }
     }
 
-    function removeOne(type) {
-        const dateStr = getTodayDateStr();
-        const key = `tiliaSessionTotals_${dateStr.replace(/-/g, "")}`;
+    function removeOneItem(type) {
+        const key = `tiliaSessionTotals_${getTodayDateStr().replace(/-/g, "")}`;
         let counts = GM_getValue(key, {});
-        if (counts[type] && counts[type] > 0) {
+        if (counts[type]) {
             counts[type]--;
-            if (counts[type] === 0) delete counts[type];
+            if (counts[type] <= 0) delete counts[type];
             GM_setValue(key, counts);
-            updateList();
+            updateWidgetView();
         }
     }
 
-    // --- UI UI UI ---
+    // --- UI Logic (Menu) ---
     function injectWidget() {
-        if (document.getElementById('t-widget')) return;
+        if (document.getElementById('tilia-v8-widget')) return;
 
         const widget = document.createElement('div');
-        widget.id = 't-widget';
-        // Standaard ONZICHTBAAR zoals gevraagd
-        widget.style.display = 'none';
+        widget.id = 'tilia-v8-widget';
+        widget.style.display = 'flex'; // Zichtbaar bij start voor makkelijke debug
 
         widget.innerHTML = `
             <style>
-                #t-widget {
-                    position: fixed; top: 60px; right: 20px; width: 230px;
-                    background: #0f172a; color: white; border-radius: 12px;
+                #tilia-v8-widget {
+                    position: fixed; top: 60px; right: 20px; width: 220px;
+                    background: #1e293b; color: white; border-radius: 12px;
                     z-index: 999999; border: 1px solid #334155;
-                    font-family: inherit; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+                    font-family: 'Segoe UI', sans-serif; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
                     display: flex; flex-direction: column; overflow: hidden;
+                    box-sizing: border-box;
                 }
-                .t-h { background: linear-gradient(135deg, #3b82f6, #1d4ed8); padding: 10px; font-weight: bold; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
-                .t-b { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-                .t-r { display: flex; justify-content: space-between; font-size: 12px; align-items: center; padding: 4px 0; border-bottom: 1px solid #1e293b; }
-                .t-cnt { background: #10b981; padding: 2px 6px; border-radius: 10px; font-weight: bold; font-size: 11px; }
-                .t-btn { background: #3b82f6; border: none; color: white; padding: 8px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 12px; transition: 0.2s; }
-                .t-btn:hover { background: #2563eb; }
-                .t-btn-s { background: #475569; border: none; color: white; padding: 6px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-top: 5px; }
-                .t-del { background: none; border: none; color: #ef4444; cursor: pointer; font-size: 16px; padding: 0 8px; font-weight: bold; }
-                .t-del:hover { color: #f87171; }
+                #tilia-v8-widget * { box-sizing: border-box; }
+                .t-header { background: #2563eb; padding: 10px; font-weight: bold; font-size: 13px; display: flex; justify-content: space-between; align-items: center; }
+                .t-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+                .t-row { display: flex; justify-content: space-between; font-size: 12px; align-items: center; padding: 4px 0; border-bottom: 1px solid #334155; }
+                .t-tag { background: #10b981; padding: 2px 6px; border-radius: 10px; font-weight: bold; font-size: 11px; }
+                .t-btn-main { background: #3b82f6; border: none; color: white; padding: 10px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 11px; }
+                .t-btn-res { background: #475569; border: none; color: white; padding: 6px; border-radius: 4px; cursor: pointer; font-size: 10px; margin-top: 5px; }
+                .t-del-btn { color: #f87171; background: none; border: none; cursor: pointer; font-weight: bold; font-size: 16px; padding: 0 8px; }
             </style>
-            <div class="t-h">
+            <div class="t-header" id="t-header" title="F9 om te verbergen/tonen">
                 <span>⚡ Tilia Teller</span>
-                <span style="font-size:11px; font-weight:normal; opacity:0.8;">[F9 Toggle]</span>
+                <span id="t-date-label" style="font-size:10px; opacity:0.8;"></span>
             </div>
-            <div class="t-b">
-                <div id="t-list-inner" style="max-height: 250px; overflow-y: auto;"></div>
-                <button class="t-btn" id="t-auto">🚀 Tel ALLE Tabellen</button>
-                <button class="t-btn-s" id="t-reset-btn">Reset Alles</button>
+            <div class="t-body" id="t-container">
+                <div id="t-render-list" style="max-height: 250px; overflow-y: auto;"></div>
+                <button type="button" class="t-btn-main" id="btn-count">🎯 Tel Open Tabel (F8)</button>
+                <button type="button" class="t-btn-res" id="btn-reset">Reset Dag Totaal</button>
             </div>
         `;
         document.body.appendChild(widget);
 
-        // Bindings (met addEventListener ipv onclick voor extra robusheid)
-        document.getElementById('t-auto').addEventListener('click', countAllRelevant);
-        document.getElementById('t-reset-btn').addEventListener('click', () => {
-            if(confirm("Telling van vandaag resetten?")) {
-                GM_setValue(`tiliaSessionTotals_${getTodayDateStr().replace(/-/g, "")}`, {});
-                updateList();
+        // Event Delegation voor alle knoppen (Reset, Min, Tel)
+        widget.addEventListener('click', (e) => {
+            const btn = e.target.closest('button');
+            if (!btn) return;
+            const id = btn.id;
+            console.log("[Tilia Teller] Klik geregistreerd op:", id || "verwijder-knop");
+
+            if (id === 'btn-count') {
+                countActiveTable();
+            }
+            
+            if (id === 'btn-reset') {
+                if (btn.getAttribute('data-confirm') === 'true') {
+                    // Tweede klik: Uitvoeren
+                    console.log("[Tilia Teller] Reset bevestigd. Dagtotalen worden gewist...");
+                    const key = `tiliaSessionTotals_${getTodayDateStr().replace(/-/g, "")}`;
+                    GM_setValue(key, {});
+                    updateWidgetView();
+                    
+                    btn.innerText = "Gewist! 🗑️";
+                    btn.style.background = "#ef4444";
+                    btn.setAttribute('data-confirm', 'false');
+                    
+                    setTimeout(() => {
+                        btn.innerText = "Reset Dag Totaal";
+                        btn.style.background = "";
+                    }, 1500);
+                } else {
+                    // Eerste klik: Vraag om bevestiging
+                    console.log("[Tilia Teller] Reset aangeklikt, wacht op bevestiging...");
+                    btn.innerText = "Zeker weten? ❓";
+                    btn.style.background = "#f59e0b";
+                    btn.setAttribute('data-confirm', 'true');
+                    
+                    // Reset na 3 seconden als er niet nogmaals wordt geklikt
+                    setTimeout(() => {
+                        if (btn.getAttribute('data-confirm') === 'true') {
+                            btn.innerText = "Reset Dag Totaal";
+                            btn.style.background = "";
+                            btn.setAttribute('data-confirm', 'false');
+                        }
+                    }, 4000);
+                }
+            }
+            
+            if (btn.classList.contains('t-del-btn')) {
+                const type = btn.getAttribute('data-type');
+                console.log("[Tilia Teller] Item verwijderen:", type);
+                removeOneItem(type);
             }
         });
 
-        // Event delegation voor de Min-knopjes (X) - dit werkt altijd!
-        document.getElementById('t-list-inner').addEventListener('click', (e) => {
-            if (e.target.classList.contains('t-del')) {
-                const type = e.target.getAttribute('data-type');
-                removeOne(type);
-            }
-        });
-
-        updateList();
+        updateWidgetView();
     }
 
-    function updateList() {
-        const list = document.getElementById('t-list-inner');
-        if (!list) return;
+    function updateWidgetView() {
+        const renderList = document.getElementById('t-render-list');
+        if (!renderList) return;
         const dateStr = getTodayDateStr();
-        const counts = GM_getValue(`tiliaSessionTotals_${dateStr.replace(/-/g, "")}`, {});
+        document.getElementById('t-date-label').innerText = dateStr;
+        const key = `tiliaSessionTotals_${dateStr.replace(/-/g, "")}`;
+        const counts = GM_getValue(key, {});
         const keys = Object.keys(counts).sort();
         
-        list.innerHTML = '';
-        let total = 0;
+        renderList.innerHTML = '';
+        let totalVal = 0;
         
         if (keys.length === 0) {
-            list.innerHTML = '<div style="text-align:center; color:#64748b; font-style:italic; font-size:12px; padding:10px;">Druk op F9 en start met tellen.</div>';
+            renderList.innerHTML = '<div style="text-align:center; color:#94a3b8; font-size:11px; padding:10px;">Geen counts. Open categorie en druk F8.</div>';
             return;
         }
 
         keys.forEach(k => {
-            total += counts[k];
+            totalVal += counts[k];
             const div = document.createElement('div');
-            div.className = 't-r';
+            div.className = 't-row';
             div.innerHTML = `
-                <div style="display:flex; align-items:center;">
-                   <button class="t-del" data-type="${k}">×</button>
+                <div style="display:flex;align-items:center;">
+                   <button type="button" class="t-del-btn" data-type="${k}">×</button>
                    <span>${k}</span>
                 </div>
-                <span class="t-cnt">${counts[k]}</span>
+                <span class="t-tag">${counts[k]}</span>
             `;
-            list.appendChild(div);
+            renderList.appendChild(div);
         });
 
-        const sumDiv = document.createElement('div');
-        sumDiv.className = 't-r';
-        sumDiv.style.border = 'none';
-        sumDiv.style.marginTop = '8px';
-        sumDiv.innerHTML = `<b>Totaal</b> <span class="t-cnt" style="background:#3b82f6;">${total}</span>`;
-        list.appendChild(sumDiv);
+        const totalRow = document.createElement('div');
+        totalRow.className = 't-row';
+        totalRow.style.border = 'none';
+        totalRow.style.marginTop = '10px';
+        totalRow.innerHTML = `<b>Totaal</b> <span class="t-tag" style="background:#2563eb;">${totalVal}</span>`;
+        renderList.appendChild(totalRow);
     }
 
-    function injectTabButtons() {
-        findAccordions().forEach(s => {
-            let area = s.querySelector('[class*="MuiAccordionSummary-content"]') || s;
-            if (area && !area.querySelector('.t-idx')) {
-                const btn = document.createElement('button');
-                btn.className = 't-idx';
-                btn.innerText = 'TEL DEZE';
-                btn.style.cssText = "margin-left: 10px; padding: 2px 5px; background: #3b82f6; color: white; border: none; border-radius: 4px; font-size: 9px; cursor: pointer;";
-                btn.onclick = (e) => {
-                    e.stopPropagation();
-                    // Custom single count logic
-                    countSingle(s);
-                };
-                area.appendChild(btn);
-            }
-        });
-    }
-
-    async function countSingle(summary) {
-        if (isBusyCounting) return;
-        const dateStr = getTodayDateStr();
-        const root = summary.closest('[class*="MuiAccordion-root"]') || summary.parentElement.parentElement;
-        const key = `tiliaSessionTotals_${dateStr.replace(/-/g, "")}`;
-        let counts = GM_getValue(key, {});
-
-        const isExpanded = summary.getAttribute('aria-expanded') === 'true' || summary.classList.contains('Mui-expanded');
-        if (!isExpanded) {
-            summary.click();
-            await waitForTableData(root);
-        }
-
-        const table = root.querySelector('table');
-        if (table) {
-            table.querySelectorAll('tbody tr').forEach(row => {
-                const cells = row.querySelectorAll('td');
-                if (cells.length < 3) return;
-                if (cells[1].textContent.toLowerCase().includes('verhuurd') && 
-                    cells[2].textContent.split(' - ')[1]?.trim() === dateStr) {
-                    const prefix = (cells[0].textContent.trim().match(/^[A-Za-z]+/) || ["ONBEKEND"])[0].toUpperCase();
-                    counts[prefix] = (counts[prefix] || 0) + 1;
-                }
-            });
-            GM_setValue(key, counts);
-            updateList();
-        }
-    }
-
-    // --- Events & Setup ---
+    // --- Hotkeys ---
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'F9') {
+        // Gebruik event.code of event.key (beide voor de zekerheid)
+        const isF8 = (e.key === 'F8' || e.keyCode === 119);
+        const isF9 = (e.key === 'F9' || e.keyCode === 120);
+
+        if (isF8) {
             e.preventDefault();
-            const w = document.getElementById('t-widget');
+            console.log("[Tilia Teller] F8 Hotkey gedetecteerd.");
+            countActiveTable();
+        }
+        if (isF9) {
+            e.preventDefault();
+            console.log("[Tilia Teller] F9 Hotkey gedetecteerd.");
+            const w = document.getElementById('tilia-v8-widget');
             if (w) {
-                const isHidden = w.style.display === 'none';
-                w.style.display = isHidden ? 'flex' : 'none';
+                w.style.display = (w.style.display === 'none') ? 'flex' : 'none';
             }
         }
-    });
+    }, true); // Gebruik capture mode om andere listeners voor te zijn
 
-    // Check overal (restriction weg)
+    // Zorg dat het menu wordt ingeladen en de weergave up-to-date blijft
     setInterval(() => {
         injectWidget();
-        injectTabButtons();
+        updateWidgetView();
     }, 2000);
 
 })();

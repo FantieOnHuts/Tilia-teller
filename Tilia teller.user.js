@@ -3,7 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      9.0
 // @description  Top ding.
-// @author       Troy Axel Groot (met aanpassing)
+// @author       Troy Axel Groot
 // @match        https://partner.tilia.app/*
 // @grant        GM_setValue
 // @grant        GM_getValue

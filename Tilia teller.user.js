@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Tilia Teller
 // @namespace    http://tampermonkey.net/
-// @version      9.0
-// @description  Top ding.
-// @author       Troy Axel Groot (met aanpassing)
+// @version      11.0
+// @description  Nu sleepbaar (draggable) met positie-uitlezing.
+// @author       Troy Axel Groot
 // @match        https://partner.tilia.app/*
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -13,7 +13,12 @@
 (function () {
     'use strict';
     if (window.top !== window) return;
-    console.log("[Tilia Teller] Script v8.7 geladen.");
+    console.log("[Tilia Teller] Script v11.0 geladen.");
+
+    // --- Instellingen & Status ---
+    let autoCountActive = GM_getValue("tilia_auto_count", false);
+    let widgetPos = GM_getValue("tilia_widget_pos", { top: "90px", right: "20px" });
+    let observer = null;
 
     // --- Utility Functions ---
     function getTodayDateStr() {
@@ -21,8 +26,10 @@
         return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
     }
 
-    // --- Core Counting Logic (van 6.1) ---
-    function countActiveTable() {
+    // --- Core Counting Logic ---
+    function countActiveTable(silent = false) {
+        if (!autoCountActive && silent) return;
+
         const dateStr = getTodayDateStr();
         const dateKey = dateStr.replace(/-/g, "");
         const keyTotals = `tiliaSessionTotals_${dateKey}`;
@@ -32,11 +39,7 @@
         let countedIds = GM_getValue(keyIds, []);
 
         const dataTable = document.querySelector('table');
-        if (!dataTable) {
-            console.warn("[Tilia Teller] Geen tabel gevonden op deze pagina.");
-            alert("Kon geen tabel vinden op deze pagina.");
-            return;
-        }
+        if (!dataTable) return;
         
         const rows = dataTable.querySelectorAll('tbody tr');
         let newCountThisBatch = 0;
@@ -49,12 +52,10 @@
             const statusText = (cells[1]?.textContent || '').trim().toLowerCase();
             const dateRangeText = (cells[2]?.textContent || '').trim();
             
-            // Controleer op 'verhuurd' en de juiste retourdatum
             if (statusText === 'verhuurd' && dateRangeText.split(' - ')[1]?.trim() === dateStr) {
                 const itemIdText = (cells[0]?.textContent || '').trim();
                 
-                // Protectie laag: Alleen tellen als ID nog niet eerder is geteld vandaag
-                if (!countedIds.includes(itemIdText)) {
+                if (itemIdText && !countedIds.includes(itemIdText)) {
                     const match = itemIdText.match(/^[A-Za-z]+/);
                     const itemType = (match && match[0]) ? match[0].toUpperCase() : "ONBEKEND";
                     
@@ -70,35 +71,164 @@
             GM_setValue(keyTotals, sessionCounts);
             GM_setValue(keyIds, countedIds);
             updateWidgetView();
-            console.log(`[Tilia Teller] +${newCountThisBatch} nieuwe items toegevoegd.`);
             
-            // Visuele feedback op widget (Groen)
             const h = document.getElementById('t-header');
-            if (h) { 
+            const span = h ? h.querySelector('span') : null;
+            if (h && span) { 
                 h.style.background = '#10b981'; 
-                const span = h.querySelector('span');
-                const oldText = span.innerText;
-                span.innerText = `+${newCountThisBatch} nieuw ✅`;
+                span.innerText = `+${newCountThisBatch} gevonden ✨`;
                 setTimeout(() => { 
                     h.style.background = ''; 
-                    span.innerText = oldText;
-                }, 1200); 
-            }
-        } else {
-            console.log("[Tilia Teller] Geen nieuwe items gevonden (mogelijk al geteld).");
-            // Visuele feedback op widget (Oranje)
-            const h = document.getElementById('t-header');
-            if (h) { 
-                h.style.background = '#f59e0b'; 
-                const span = h.querySelector('span');
-                const oldText = span.innerText;
-                span.innerText = "Geen nieuwe items ⚠️";
-                setTimeout(() => { 
-                    h.style.background = ''; 
-                    span.innerText = oldText;
-                }, 2000); 
+                    span.innerText = "⚡ Tilia Teller";
+                }, 1500); 
             }
         }
+    }
+
+    // --- Mutation Observer ---
+    function setupObserver() {
+        if (observer) observer.disconnect();
+        observer = new MutationObserver(() => {
+            if (!autoCountActive) return;
+            clearTimeout(window.tiliaDebounce);
+            window.tiliaDebounce = setTimeout(() => countActiveTable(true), 1200);
+        });
+        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    }
+
+    // --- Draggable Logic ---
+    function makeDraggable(el, handle) {
+        let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+        handle.onmousedown = dragMouseDown;
+
+        function dragMouseDown(e) {
+            e.preventDefault();
+            pos3 = e.clientX;
+            pos4 = e.clientY;
+            document.onmouseup = closeDragElement;
+            document.onmousemove = elementDrag;
+            handle.style.cursor = 'grabbing';
+        }
+
+        function elementDrag(e) {
+            e.preventDefault();
+            pos1 = pos3 - e.clientX;
+            pos2 = pos4 - e.clientY;
+            pos3 = e.clientX;
+            pos4 = e.clientY;
+            
+            const newTop = (el.offsetTop - pos2);
+            const newLeft = (el.offsetLeft - pos1);
+            
+            el.style.top = newTop + "px";
+            el.style.left = newLeft + "px";
+            el.style.right = 'auto'; // Overschrijf 'right' als we gaan slepen
+        }
+
+        function closeDragElement() {
+            document.onmouseup = null;
+            document.onmousemove = null;
+            handle.style.cursor = 'grab';
+            
+            // Sla positie op
+            GM_setValue("tilia_widget_pos", { 
+                top: el.style.top, 
+                left: el.style.left,
+                right: 'auto'
+            });
+        }
+    }
+
+    // --- UI Logic ---
+    function injectWidget() {
+        if (document.getElementById('tilia-v11-widget')) return;
+
+        const widget = document.createElement('div');
+        widget.id = 'tilia-v11-widget';
+        widget.style.display = 'none'; 
+        widget.style.top = widgetPos.top;
+        widget.style.right = widgetPos.right;
+        if (widgetPos.left) widget.style.left = widgetPos.left;
+
+        widget.innerHTML = `
+            <style>
+                #tilia-v11-widget {
+                    position: fixed; width: 250px;
+                    background: #1e293b; color: white; border-radius: 12px;
+                    z-index: 999999; border: 1px solid #334155;
+                    font-family: 'Segoe UI', sans-serif; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+                    display: flex; flex-direction: column; overflow: hidden;
+                    user-select: none;
+                }
+                .t-header { 
+                    background: #2563eb; padding: 10px; font-weight: bold; font-size: 13px; 
+                    display: flex; justify-content: space-between; align-items: center; 
+                    transition: background 0.3s; cursor: grab;
+                }
+                .t-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+                .t-row { display: flex; justify-content: space-between; font-size: 12px; align-items: center; padding: 4px 0; border-bottom: 1px solid #334155; }
+                .t-tag { background: #10b981; padding: 2px 6px; border-radius: 10px; font-weight: bold; font-size: 11px; }
+                .t-btn-main { background: #3b82f6; border: none; color: white; padding: 10px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 11px; margin-top: 5px; }
+                .t-btn-auto { background: ${autoCountActive ? '#10b981' : '#475569'}; border: none; color: white; padding: 8px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 10px; display: flex; align-items: center; justify-content: center; gap: 5px; }
+                .t-btn-res { background: none; border: 1px solid #475569; color: #94a3b8; padding: 5px; border-radius: 4px; cursor: pointer; font-size: 9px; margin-top: 5px; }
+                .t-del-btn { color: #f87171; background: none; border: none; cursor: pointer; font-weight: bold; font-size: 16px; padding: 0 8px; }
+                .status-dot { width: 8px; height: 8px; background: ${autoCountActive ? '#10b981' : '#ef4444'}; border-radius: 50%; display: inline-block; }
+            </style>
+            <div class="t-header" id="t-header">
+                <span>⚡ Tilia Teller</span>
+                <span id="t-date-label" style="font-size:10px; opacity:0.8;"></span>
+            </div>
+            <div class="t-body" id="t-body-container">
+                <button class="t-btn-auto" id="btn-toggle-auto">
+                    <span class="status-dot" id="auto-status-dot"></span>
+                    Auto-Count: <span id="auto-status-text">${autoCountActive ? 'AAN' : 'UIT'}</span>
+                </button>
+                <div id="t-render-list"></div>
+                <button class="t-btn-main" id="btn-count">🎯 Handmatig Tellen (F8)</button>
+                <button class="t-btn-res" id="btn-reset">Reset Dag Totaal</button>
+            </div>
+        `;
+        document.body.appendChild(widget);
+
+        // Maak draggable
+        const header = widget.querySelector('#t-header');
+        makeDraggable(widget, header);
+
+        widget.addEventListener('click', (e) => {
+            const btn = e.target.closest('button');
+            if (!btn) return;
+            
+            if (btn.id === 'btn-toggle-auto') {
+                autoCountActive = !autoCountActive;
+                GM_setValue("tilia_auto_count", autoCountActive);
+                btn.style.background = autoCountActive ? '#10b981' : '#475569';
+                document.getElementById('auto-status-dot').style.background = autoCountActive ? '#10b981' : '#ef4444';
+                document.getElementById('auto-status-text').innerText = autoCountActive ? 'AAN' : 'UIT';
+            }
+
+            if (btn.id === 'btn-count') countActiveTable();
+            
+            if (btn.id === 'btn-reset') {
+                if (btn.getAttribute('data-confirm') === 'true') {
+                    const dateKey = getTodayDateStr().replace(/-/g, "");
+                    GM_setValue(`tiliaSessionTotals_${dateKey}`, {});
+                    GM_setValue(`tiliaCountedIds_${dateKey}`, []);
+                    updateWidgetView();
+                    btn.innerText = "Gereset!";
+                    setTimeout(() => { btn.innerText = "Reset Dag Totaal"; btn.setAttribute('data-confirm', 'false'); }, 1500);
+                } else {
+                    btn.innerText = "Zeker weten?";
+                    btn.setAttribute('data-confirm', 'true');
+                }
+            }
+
+            if (btn.classList.contains('t-del-btn')) {
+                const type = btn.getAttribute('data-type');
+                removeOneItem(type);
+            }
+        });
+
+        updateWidgetView();
     }
 
     function removeOneItem(type) {
@@ -112,105 +242,13 @@
         }
     }
 
-    // --- UI Logic (Menu) ---
-    function injectWidget() {
-        if (document.getElementById('tilia-v8-widget')) return;
-
-        const widget = document.createElement('div');
-        widget.id = 'tilia-v8-widget';
-        widget.style.display = 'none'; // Start gesloten zoals gevraagd
-
-        widget.innerHTML = `
-            <style>
-                #tilia-v8-widget {
-                    position: fixed; top: 90px; right: 20px; width: 220px;
-                    background: #1e293b; color: white; border-radius: 12px;
-                    z-index: 999999; border: 1px solid #334155;
-                    font-family: 'Segoe UI', sans-serif; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-                    display: flex; flex-direction: column; overflow: hidden;
-                    box-sizing: border-box;
-                }
-                #tilia-v8-widget * { box-sizing: border-box; }
-                .t-header { background: #2563eb; padding: 10px; font-weight: bold; font-size: 13px; display: flex; justify-content: space-between; align-items: center; }
-                .t-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-                .t-row { display: flex; justify-content: space-between; font-size: 12px; align-items: center; padding: 4px 0; border-bottom: 1px solid #334155; }
-                .t-tag { background: #10b981; padding: 2px 6px; border-radius: 10px; font-weight: bold; font-size: 11px; }
-                .t-btn-main { background: #3b82f6; border: none; color: white; padding: 10px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 11px; }
-                .t-btn-res { background: #475569; border: none; color: white; padding: 6px; border-radius: 4px; cursor: pointer; font-size: 10px; margin-top: 5px; }
-                .t-del-btn { color: #f87171; background: none; border: none; cursor: pointer; font-weight: bold; font-size: 16px; padding: 0 8px; }
-            </style>
-            <div class="t-header" id="t-header" title="F9 om te verbergen/tonen">
-                <span>⚡ Tilia Teller</span>
-                <span id="t-date-label" style="font-size:10px; opacity:0.8;"></span>
-            </div>
-            <div class="t-body" id="t-container">
-                <div id="t-render-list" style="max-height: 250px; overflow-y: auto;"></div>
-                <button type="button" class="t-btn-main" id="btn-count">🎯 Tel Open Tabel (F8)</button>
-                <button type="button" class="t-btn-res" id="btn-reset">Reset Dag Totaal</button>
-            </div>
-        `;
-        document.body.appendChild(widget);
-
-        // Event Delegation voor alle knoppen (Reset, Min, Tel)
-        widget.addEventListener('click', (e) => {
-            const btn = e.target.closest('button');
-            if (!btn) return;
-            const id = btn.id;
-            console.log("[Tilia Teller] Klik geregistreerd op:", id || "verwijder-knop");
-
-            if (id === 'btn-count') {
-                countActiveTable();
-            }
-            
-            if (id === 'btn-reset') {
-                if (btn.getAttribute('data-confirm') === 'true') {
-                    // Tweede klik: Uitvoeren
-                    console.log("[Tilia Teller] Reset bevestigd. Alles wordt gewist.");
-                    const dateKey = getTodayDateStr().replace(/-/g, "");
-                    GM_setValue(`tiliaSessionTotals_${dateKey}`, {});
-                    GM_setValue(`tiliaCountedIds_${dateKey}`, []);
-                    updateWidgetView();
-                    btn.innerText = "Gewist! 🗑️";
-                    btn.style.background = "#ef4444";
-                    btn.setAttribute('data-confirm', 'false');
-                    
-                    setTimeout(() => {
-                        btn.innerText = "Reset Dag Totaal";
-                        btn.style.background = "";
-                    }, 1500);
-                } else {
-                    // Eerste klik: Vraag om bevestiging
-                    console.log("[Tilia Teller] Reset aangeklikt, wacht op bevestiging...");
-                    btn.innerText = "Zeker weten? ❓";
-                    btn.style.background = "#f59e0b";
-                    btn.setAttribute('data-confirm', 'true');
-                    
-                    // Reset na 3 seconden als er niet nogmaals wordt geklikt
-                    setTimeout(() => {
-                        if (btn.getAttribute('data-confirm') === 'true') {
-                            btn.innerText = "Reset Dag Totaal";
-                            btn.style.background = "";
-                            btn.setAttribute('data-confirm', 'false');
-                        }
-                    }, 4000);
-                }
-            }
-            
-            if (btn.classList.contains('t-del-btn')) {
-                const type = btn.getAttribute('data-type');
-                console.log("[Tilia Teller] Item verwijderen:", type);
-                removeOneItem(type);
-            }
-        });
-
-        updateWidgetView();
-    }
-
     function updateWidgetView() {
         const renderList = document.getElementById('t-render-list');
         if (!renderList) return;
         const dateStr = getTodayDateStr();
-        document.getElementById('t-date-label').innerText = dateStr;
+        const dateLabel = document.getElementById('t-date-label');
+        if (dateLabel) dateLabel.innerText = dateStr;
+        
         const key = `tiliaSessionTotals_${dateStr.replace(/-/g, "")}`;
         const counts = GM_getValue(key, {});
         const keys = Object.keys(counts).sort();
@@ -219,7 +257,7 @@
         let totalVal = 0;
         
         if (keys.length === 0) {
-            renderList.innerHTML = '<div style="text-align:center; color:#94a3b8; font-size:11px; padding:10px;">Geen counts. Open categorie en druk F8.</div>';
+            renderList.innerHTML = '<div style="text-align:center; color:#94a3b8; font-size:11px; padding:10px;">Geen items geteld vandaag.</div>';
             return;
         }
 
@@ -229,7 +267,7 @@
             div.className = 't-row';
             div.innerHTML = `
                 <div style="display:flex;align-items:center;">
-                   <button type="button" class="t-del-btn" data-type="${k}">×</button>
+                   <button class="t-del-btn" data-type="${k}">×</button>
                    <span>${k}</span>
                 </div>
                 <span class="t-tag">${counts[k]}</span>
@@ -240,36 +278,27 @@
         const totalRow = document.createElement('div');
         totalRow.className = 't-row';
         totalRow.style.border = 'none';
-        totalRow.style.marginTop = '10px';
+        totalRow.style.marginTop = '8px';
         totalRow.innerHTML = `<b>Totaal</b> <span class="t-tag" style="background:#2563eb;">${totalVal}</span>`;
         renderList.appendChild(totalRow);
     }
 
     // --- Hotkeys ---
     document.addEventListener('keydown', (e) => {
-        // Gebruik event.code of event.key (beide voor de zekerheid)
-        const isF8 = (e.key === 'F8' || e.keyCode === 119);
-        const isF9 = (e.key === 'F9' || e.keyCode === 120);
-
-        if (isF8) {
+        if (e.key === 'F8') { e.preventDefault(); countActiveTable(); }
+        if (e.key === 'F9') {
             e.preventDefault();
-            console.log("[Tilia Teller] F8 Hotkey gedetecteerd.");
-            countActiveTable();
+            const w = document.getElementById('tilia-v11-widget');
+            if (w) w.style.display = (w.style.display === 'none') ? 'flex' : 'none';
         }
-        if (isF9) {
-            e.preventDefault();
-            console.log("[Tilia Teller] F9 Hotkey gedetecteerd.");
-            const w = document.getElementById('tilia-v8-widget');
-            if (w) {
-                w.style.display = (w.style.display === 'none') ? 'flex' : 'none';
-            }
-        }
-    }, true); // Gebruik capture mode om andere listeners voor te zijn
+    });
 
-    // Zorg dat het menu wordt ingeladen en de weergave up-to-date blijft
+    injectWidget();
+    setupObserver();
+
     setInterval(() => {
-        injectWidget();
+        if (!document.getElementById('tilia-v11-widget')) injectWidget();
         updateWidgetView();
-    }, 2000);
-
+        if (autoCountActive) countActiveTable(true);
+    }, 3000);
 })();

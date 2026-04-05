@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Tilia Teller
 // @namespace    http://tampermonkey.net/
-// @version      11.0
-// @description  Nu sleepbaar (draggable) met positie-uitlezing.
-// @author       Troy Axel Groot
+// @version      9.0
+// @description  Top ding.
+// @author       Troy Axel Groot (met aanpassing)
 // @match        https://partner.tilia.app/*
 // @grant        GM_setValue
 // @grant        GM_getValue

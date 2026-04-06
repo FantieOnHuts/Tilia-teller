@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tilia Teller
 // @namespace    http://tampermonkey.net/
-// @version      9.0
+// @version      10.0
 // @description  Top ding.
 // @author       Troy Axel Groot 
 // @match        https://partner.tilia.app/*
@@ -13,7 +13,7 @@
 (function () {
     'use strict';
     if (window.top !== window) return;
-    console.log("[Tilia Teller] Script v11.0 geladen.");
+    console.log("[Tilia Teller] Script v12.0 geladen. Automatisch aftrekken geactiveerd.");
 
     // --- Instellingen & Status ---
     let autoCountActive = GM_getValue("tilia_auto_count", false);
@@ -49,19 +49,31 @@
             const cells = row.querySelectorAll('td');
             if (cells.length < 3) return;
             
+            const itemIdText = (cells[0]?.textContent || '').trim();
             const statusText = (cells[1]?.textContent || '').trim().toLowerCase();
             const dateRangeText = (cells[2]?.textContent || '').trim();
             
-            if (statusText === 'verhuurd' && dateRangeText.split(' - ')[1]?.trim() === dateStr) {
-                const itemIdText = (cells[0]?.textContent || '').trim();
-                
-                if (itemIdText && !countedIds.includes(itemIdText)) {
-                    const match = itemIdText.match(/^[A-Za-z]+/);
-                    const itemType = (match && match[0]) ? match[0].toUpperCase() : "ONBEKEND";
-                    
+            // Check if it's currently considered 'verhuurd' for today
+            const isCurrentlyVerhuurd = (statusText === 'verhuurd' && dateRangeText.split(' - ')[1]?.trim() === dateStr);
+            
+            if (itemIdText) {
+                const match = itemIdText.match(/^[A-Za-z]+/);
+                const itemType = (match && match[0]) ? match[0].toUpperCase() : "ONBEKEND";
+
+                if (isCurrentlyVerhuurd && !countedIds.includes(itemIdText)) {
+                    // New bike found!
                     sessionCounts[itemType] = (sessionCounts[itemType] || 0) + 1;
                     countedIds.push(itemIdText);
                     newCountThisBatch++;
+                    foundAny = true;
+                } else if (!isCurrentlyVerhuurd && countedIds.includes(itemIdText)) {
+                    // Bike was counted but is now NO LONGER 'verhuurd' (cancelled/status changed)
+                    if (sessionCounts[itemType] > 0) {
+                        sessionCounts[itemType]--;
+                        if (sessionCounts[itemType] <= 0) delete sessionCounts[itemType];
+                    }
+                    countedIds = countedIds.filter(id => id !== itemIdText);
+                    newCountThisBatch--;
                     foundAny = true;
                 }
             }
@@ -75,8 +87,17 @@
             const h = document.getElementById('t-header');
             const span = h ? h.querySelector('span') : null;
             if (h && span) { 
-                h.style.background = '#10b981'; 
-                span.innerText = `+${newCountThisBatch} gevonden ✨`;
+                if (newCountThisBatch > 0) {
+                    h.style.background = '#10b981'; // Green
+                    span.innerText = `+${newCountThisBatch} gevonden ✨`;
+                } else if (newCountThisBatch < 0) {
+                    h.style.background = '#f43f5e'; // Rose/Red
+                    span.innerText = `${newCountThisBatch} verwijderd 🗑️`;
+                } else {
+                    h.style.background = '#3b82f6'; // Blue
+                    span.innerText = "Lijst bijgewerkt 🔄";
+                }
+                
                 setTimeout(() => { 
                     h.style.background = ''; 
                     span.innerText = "⚡ Tilia Teller";

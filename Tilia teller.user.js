@@ -8,6 +8,8 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @run-at       document-end
+// @updateURL    https://raw.githubusercontent.com/FantieOnHuts/Tilia-teller/main/Tilia%20teller.user.js
+// @downloadURL  https://raw.githubusercontent.com/FantieOnHuts/Tilia-teller/main/Tilia%20teller.user.js
 // ==/UserScript==
 
 (function () {

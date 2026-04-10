@@ -12,7 +12,3 @@
 // @updateURL    https://raw.githubusercontent.com/FantieOnHuts/Tilia-teller/main/Tilia.teller.loader.user.js
 // @downloadURL  https://raw.githubusercontent.com/FantieOnHuts/Tilia-teller/main/Tilia.teller.loader.user.js
 // ==/UserScript==
-
-// Dit script zelf is een loader. Alle logica zit in het @require bestand hierboven.
-// Zodra je dit installeert, haalt Tampermonkey de code van GitHub en voert deze uit.
-// Voordeel: Mensen hoeven maar één keer dit kleine script te installeren.
